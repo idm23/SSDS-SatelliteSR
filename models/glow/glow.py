@@ -4,21 +4,23 @@ import torch.nn.functional as F
 
 from models.glow.act_norm import ActNorm
 from models.glow.coupling import Coupling
+from models.glow.coupling16 import Coupling16
 from models.glow.inv_conv import InvConv
 
 
 class Glow(nn.Module):
 
-    def __init__(self, num_channels, num_levels, num_steps, mode='sketch'):
+    def __init__(self, num_channels, num_levels, num_steps, mode='sketch', cond_channels = 4, coupling16 = False):
         super(Glow, self).__init__()
 
         # Use bounds to rescale images before converting to logits, not learned
         self.register_buffer('bounds', torch.tensor([0.95], dtype=torch.float32))
         self.flows = _Glow(in_channels=4 * 3,  # RGB image after squeeze
-                           cond_channels=4,
+                           cond_channels=cond_channels,
                            mid_channels=num_channels,
                            num_levels=num_levels,
-                           num_steps=num_steps)
+                           num_steps=num_steps,
+                           coupling16 = coupling16)
         self.mode = mode
 
     def forward(self, x, x_cond, reverse=False):
@@ -32,8 +34,9 @@ class Glow(nn.Module):
 
             # De-quantize and convert to logits
             x, sldj = self._pre_process(x)
-        if self.mode == 'gray':
-            x_cond, _ = self._pre_process(x_cond)
+        #if self.mode == 'gray':
+            #x_cond, _ = self._pre_process(x_cond)
+        #x_cond, _ = self._pre_process(x_cond)
 
         x = squeeze(x)
         x_cond = squeeze(x_cond)
@@ -78,11 +81,12 @@ class _Glow(nn.Module):
         num_levels (int): Number of levels to construct. Counter for recursion.
         num_steps (int): Number of steps of flow for each level.
     """
-    def __init__(self, in_channels, cond_channels, mid_channels, num_levels, num_steps):
+    def __init__(self, in_channels, cond_channels, mid_channels, num_levels, num_steps, coupling16 = False):
         super(_Glow, self).__init__()
         self.steps = nn.ModuleList([_FlowStep(in_channels=in_channels,
                                               cond_channels=cond_channels,
-                                              mid_channels=mid_channels)
+                                              mid_channels=mid_channels,
+                                              coupling16 = coupling16)
                                     for _ in range(num_steps)])
 
         if num_levels > 1:
@@ -90,7 +94,8 @@ class _Glow(nn.Module):
                               cond_channels=4 * cond_channels,
                               mid_channels=mid_channels,
                               num_levels=num_levels - 1,
-                              num_steps=num_steps)
+                              num_steps=num_steps,
+                              coupling16 = coupling16)
         else:
             self.next = None
 
@@ -116,13 +121,16 @@ class _Glow(nn.Module):
 
 
 class _FlowStep(nn.Module):
-    def __init__(self, in_channels, cond_channels, mid_channels):
+    def __init__(self, in_channels, cond_channels, mid_channels, coupling16 = False):
         super(_FlowStep, self).__init__()
 
         # Activation normalization, invertible 1x1 convolution, affine coupling
         self.norm = ActNorm(in_channels, return_ldj=True)
         self.conv = InvConv(in_channels)
-        self.coup = Coupling(in_channels // 2, cond_channels, mid_channels)
+        if coupling16:
+            self.coup = Coupling16(in_channels // 2, cond_channels, mid_channels)
+        else:
+            self.coup = Coupling(in_channels // 2, cond_channels, mid_channels)
 
     def forward(self, x, x_cond, sldj=None, reverse=False):
         if reverse:
